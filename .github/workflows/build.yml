@@ -55,6 +55,9 @@ jobs:
           grep -rn "org.ppsspp.ppsspp.Shortcuts" ppsspp/android/src | head -3 || true
           grep -n "native.*\(keyDown\|keyUp\|joystickAxis\)" "$JROOT/org/ppsspp/ppsspp/NativeApp.java" || true
           grep -n "PpssppActivity" ppsspp/android/AndroidManifest.xml | head -3 || true
+          grep -rn "setShortcutParam\|parseIntent\|SHORTCUT_EXTRA_KEY" ppsspp/android/src | head -12 || true
+          grep -n "isAtTopLevel\|sendMessageFromJava" "$JROOT/org/ppsspp/ppsspp/NativeApp.java" | head -4 || true
+          grep -n "compileSdk\|targetSdk" ppsspp/android/build.gradle | head -3 || true
 
       - name: Agregar menu, controles tactiles y verificacion SHA-256
         run: |
@@ -956,10 +959,12 @@ jobs:
           import android.app.Activity;
           import android.app.AlertDialog;
           import android.app.Application;
+          import android.os.Build;
           import android.os.Bundle;
           import android.os.Handler;
           import android.os.Looper;
           import android.os.Process;
+          import android.util.Log;
           import android.view.Gravity;
           import android.view.KeyEvent;
           import android.view.ViewGroup;
@@ -967,15 +972,19 @@ jobs:
           import android.widget.FrameLayout;
           import android.widget.LinearLayout;
           import android.widget.TextView;
+          import android.widget.Toast;
+          import android.window.OnBackInvokedDispatcher;
           import java.lang.reflect.InvocationTargetException;
+          import java.lang.reflect.Method;
           import java.lang.reflect.Proxy;
 
           /**
            * Se ejecuta también en el proceso del juego (:game). Cuando arranca la actividad de PPSSPP:
-           * verifica que el ISO sea el correcto, pone encima NUESTROS controles táctiles y sustituye
-           * el botón Atrás por nuestro menú de pausa.
+           * verifica que el ISO sea el correcto, le fuerza el arranque del juego, pone encima NUESTROS
+           * controles táctiles y sustituye el botón Atrás por nuestro menú de pausa.
            */
           public class LbpApp extends Application implements Application.ActivityLifecycleCallbacks {
+              private static final String TAG = "LBP";
               private static final String HINT = "Toca un control para seleccionarlo y arrástralo";
 
               private final Handler h = new Handler(Looper.getMainLooper());
@@ -994,11 +1003,64 @@ jobs:
 
               private static void die() { Process.killProcess(Process.myPid()); }
 
+              private static String isoPath(Activity a) {
+                  return a.getIntent() == null ? null : a.getIntent().getStringExtra(Cfg.EXTRA_PATH);
+              }
+
+              /** Mismo formato que usa PPSSPP para sus accesos directos: ruta entre comillas. */
+              private static String quoted(String p) {
+                  return "\"" + p.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+              }
+
+              // ---------- reflexión sobre NativeApp ----------
+              private static Method nativeMethod(String name, Class<?>... params) {
+                  try {
+                      return Class.forName("org.ppsspp.ppsspp.NativeApp").getMethod(name, params);
+                  } catch (Throwable t) {
+                      return null;
+                  }
+              }
+
+              private static boolean atTopLevel() {
+                  try {
+                      Method m = nativeMethod("isAtTopLevel");
+                      return m != null && Boolean.TRUE.equals(m.invoke(null));
+                  } catch (Throwable t) {
+                      return false;
+                  }
+              }
+
+              private static boolean sendBoot(String path) {
+                  try {
+                      Method m = nativeMethod("sendMessageFromJava", String.class, String.class);
+                      if (m == null) m = nativeMethod("sendMessage", String.class, String.class);
+                      if (m == null) return false;
+                      m.invoke(null, "shortcutParam", quoted(path));
+                      return true;
+                  } catch (Throwable t) {
+                      Log.w(TAG, "sendBoot fallo: " + t);
+                      return false;
+                  }
+              }
+
+              // ---------- ciclo de vida ----------
+              /** Antes de que PPSSPP lea el Intent: dejamos listo el juego a arrancar. */
+              public void onActivityPreCreated(Activity a, Bundle b) {
+                  if (!isGame(a)) return;
+                  String path = isoPath(a);
+                  if (path == null) return;
+                  try {
+                      a.getClass().getMethod("setShortcutParam", String.class).invoke(a, quoted(path));
+                      Log.i(TAG, "setShortcutParam ok: " + path);
+                  } catch (Throwable t) {
+                      Log.w(TAG, "setShortcutParam no disponible: " + t);
+                  }
+              }
+
               @Override
               public void onActivityCreated(Activity a, Bundle b) {
                   if (!isGame(a)) return;
-                  String path = a.getIntent() == null ? null : a.getIntent().getStringExtra(Cfg.EXTRA_PATH);
-                  if (!IsoFinder.isVerified(a, path)) { // solo se juega con el ISO verificado por SHA-256
+                  if (!IsoFinder.isVerified(a, isoPath(a))) { // solo se juega con el ISO verificado por SHA-256
                       a.finish();
                       h.postDelayed(LbpApp::die, 300);
                   }
@@ -1031,6 +1093,7 @@ jobs:
                           }
                       };
                       hookBack(a);
+                      watchBoot(a, 0);
                       h.post(new Runnable() {
                           @Override public void run() {
                               if (a.isFinishing()) return;
@@ -1046,6 +1109,22 @@ jobs:
                   if (overlay.getParent() == null) {
                       try { a.addContentView(overlay, new ViewGroup.LayoutParams(-1, -1)); } catch (Throwable t) { /* reintenta */ }
                   }
+              }
+
+              /** Si PPSSPP se queda en su menú, le reenviamos el juego; si aun así no carga, avisamos. */
+              private void watchBoot(final Activity a, final int attempt) {
+                  h.postDelayed(() -> {
+                      if (a.isFinishing()) return;
+                      String path = isoPath(a);
+                      if (path == null || !atTopLevel()) return; // ya está dentro del juego
+                      if (attempt == 0) {
+                          Log.w(TAG, "PPSSPP sigue en su menu, reenviando el juego");
+                          sendBoot(path);
+                          watchBoot(a, 1);
+                      } else {
+                          Toast.makeText(a, "PPSSPP no pudo abrir el juego:\n" + path, Toast.LENGTH_LONG).show();
+                      }
+                  }, attempt == 0 ? 5000 : 7000);
               }
 
               /** Intercepta Atrás: abre nuestro menú en vez del menú de PPSSPP (que permitiría cargar otros juegos). */
@@ -1069,6 +1148,15 @@ jobs:
                                   throw ex.getCause();
                               }
                           }));
+                  // Android 13+ con gesto de atrás "predictivo": no llega KEYCODE_BACK, hay que registrar callback.
+                  if (Build.VERSION.SDK_INT >= 33) {
+                      try {
+                          a.getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                                  OnBackInvokedDispatcher.PRIORITY_OVERLAY, () -> h.post(() -> showMenu(a)));
+                      } catch (Throwable t) {
+                          Log.w(TAG, "OnBackInvokedCallback no registrado: " + t);
+                      }
+                  }
               }
 
               private void showMenu(final Activity a) {
