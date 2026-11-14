@@ -7,7 +7,7 @@
 #  Uso: guardalo como .github/workflows/build.yml en tu repo, (opcional)
 #  sube un icon.png a la raiz y ejecuta "Run workflow". El APK sale en
 #  Artifacts. ISO: /storage/emulated/0/LittleBigPlanet (el nombre da igual).
-#  PPSSPP es GPLv2+: si distribuyes el APK, distribuye tambien este codigo.
+# PPSSPP es GPLv2+: si distribuyes el APK, distribuye tambien este codigo.
 # =====================================================================
 name: Little Big Planet PSP (PPSSPP)
 
