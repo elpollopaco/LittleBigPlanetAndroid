@@ -7,7 +7,7 @@
 #  Uso: guardalo como .github/workflows/build.yml en tu repo, (opcional)
 #  sube un icon.png a la raiz y ejecuta "Run workflow". El APK sale en
 #  Artifacts. ISO: /storage/emulated/0/LittleBigPlanet (el nombre da igual).
-# PPSSPP es GPLv2+: si distribuyes el APK, distribuye tambien este codigo.
+#  PPSSPP es GPLv2+: si distribuyes el APK, distribuye tambien este codigo.
 # =====================================================================
 name: Little Big Planet PSP (PPSSPP)
 
@@ -1405,15 +1405,23 @@ jobs:
               print('[LBP] Config.cpp ShowTouchControls=false: %d' % n3)
           PY_EOF
 
+      - name: Instalar Gradle (PPSSPP no trae gradlew en android/)
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14.3'
+
       - name: Compilar APK
         working-directory: ppsspp/android
         env:
           GRADLE_OPTS: -Xmx3g -Dfile.encoding=UTF-8
         run: |
-          chmod +x gradlew
-          ./gradlew --no-daemon --stacktrace assembleNormalOptimized \
-            || ./gradlew --no-daemon --stacktrace assembleNormalRelease \
-            || ./gradlew --no-daemon --stacktrace assembleNormalDebug
+          ls
+          grep -rn "com.android.tools.build" build.gradle settings.gradle ../build.gradle 2>/dev/null | head -3 || true
+          if [ -f ./gradlew ]; then chmod +x ./gradlew; GR=./gradlew; else GR=gradle; fi
+          echo "[LBP-CHECK] usando: $GR"
+          $GR --no-daemon --stacktrace assembleNormalOptimized \
+            || $GR --no-daemon --stacktrace assembleNormalRelease \
+            || $GR --no-daemon --stacktrace assembleNormalDebug
 
       - name: Restaurar keystore (misma firma entre builds)
         uses: actions/cache@v4
